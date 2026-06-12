@@ -1,0 +1,60 @@
+// Istio Ambient Mode install steps
+
+Reference: https://github.com/bugbiteme/ossm-3-demo
+
+1. Do normal ./install_operators.sh
+
+2. Do all steps in "Set up Tempo and OpenTelemetryCollector"
+
+3. For "Set up OSSM3" Use the OSSM3Ambient folder 
+
+  3a.. oc new-project istio-system
+  
+  3b. oc apply -f istioambientcr.yaml
+  
+  3c. oc create namespace istio-cni
+  
+  3d. oc label namespace istio-cni istio-discovery=enabled
+      oc label namespace istio-system istio-discovery=enabled
+      oc apply -f istioambientCni.yaml
+      
+  3e. oc create namespace ztunnel
+      oc apply -f ztunnel.yaml
+      
+  3f. oc create namespace bookinfo
+      oc apply -f https://raw.githubusercontent.com/istio/istio/master/samples/bookinfo/platform/kube/bookinfo.yaml -n bookinfo
+      oc label namespace bookinfo istio.io/dataplane-mode=ambient
+      
+  3g. Validate with: istioctl ztunnel-config workloads $ZTUNNEL_POD -n ztunnel | grep bookinfo
+  
+  3h. oc apply -f waypointgateway.yaml
+      oc label namespace bookinfo istio.io/use-waypoint=bookinfo-waypoint
+      
+  3i. oc apply -f ./resources/TempoOtel/istioTelemetry.yaml  -n istio-system
+      oc label namespace opentelemetrycollector istio-injection=enabled
+      
+4. Do all steps in "Set up OCP user monitoring workflow"
+
+5. Do all steps in "Set up Kiali"
+
+6. Do the first two commands in "Set up BookInfo"
+
+7. Go back to OSSM3Ambient folder
+
+  7a. oc apply -f bookinfogateway.yaml
+      oc apply -f routebookinfo.yaml
+      
+  7b. oc get route bookinfo-edge -n bookinfo -o jsonpath='{.spec.host}
+  
+  7c. Edit the HTTPRoutebookinfo.yaml resource in OSSM3Ambient with the route in the HTTPRoute.spec.hostnames field with the full route path 
+      oc apply -f HTTPRoutebookinfo.yaml 
+
+8. Test the route with curl
+
+CLUSTER_URL=$(oc get route bookinfo-edge -n bookinfo -o jsonpath='{.spec.host}')
+
+curl -I http://$CLUSTER_URL/productpage
+
+
+
+
