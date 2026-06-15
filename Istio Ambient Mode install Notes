@@ -29,6 +29,7 @@ Reference: https://github.com/bugbiteme/ossm-3-demo
   
   3h. oc apply -f waypointgateway.yaml
       oc label namespace bookinfo istio.io/use-waypoint=bookinfo-waypoint
+      oc label namespace bookinfo istio.io/ingress-use-waypoint=true
       
   3i. oc apply -f ./resources/TempoOtel/istioTelemetry.yaml  -n istio-system
       oc label namespace opentelemetrycollector istio-injection=enabled
