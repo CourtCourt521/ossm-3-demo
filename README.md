@@ -27,7 +27,8 @@ By the end of this quickstart, you will have installed OSSM3, where tracing info
 - You are logged into OpenShift via the CLI
 
 ## What is located where
-The quickstart 
+
+### Sidecar Mode (Default)
   * installs MiniO and Tempo to `tracing-system` namespace
   * installs OpenTelemetryCollector to `opentelemetrycollector` namespace
   * installs OSSM3 (Istio CR) with Kiali and OSSMC to `istio-system` namespace
@@ -37,8 +38,71 @@ The quickstart
   * installs bookinfo app with traffic generator in `bookinfo` namespace
   * installs RestAPI app in `rest-api-with-mesh` namespace
 
+### Ambient Mode
+  * Same as Sidecar Mode, except:
+    * installs ZTunnel to `ztunnel` namespace (instead of sidecar proxies)
+    * installs Waypoint Gateway to `bookinfo` namespace (for L7 processing)
+    * uses Kubernetes Gateway API resources in `bookinfo` namespace (instead of `istio-ingress`)
+
 ## Shortcut to the end
 To skip all the following steps and set everything up automatically (e.g., for demo purposes), simply run the prepared `./install_ossm3_demo.sh` script which will perform all steps automatically.
+
+## Installation Modes
+
+This demo supports two Istio installation modes: **Sidecar Mode** (default) and **Ambient Mode**.
+
+### Sidecar Mode (Default)
+Traditional service mesh architecture with sidecar proxies injected into application pods.
+
+**Bash:**
+```bash
+./install_ossm3_demo.sh sidecar
+# or simply
+./install_ossm3_demo.sh
+```
+
+**Ansible:**
+```bash
+ansible-playbook ansible/install_ossm3_demo.yaml -e "mode=sidecar"
+# or simply
+ansible-playbook ansible/install_ossm3_demo.yaml
+```
+
+### Ambient Mode
+Next-generation mesh architecture using ZTunnel and Waypoint gateways for reduced resource overhead.
+
+**Bash:**
+```bash
+./install_ossm3_demo.sh ambient
+```
+
+**Ansible:**
+```bash
+ansible-playbook ansible/install_ossm3_demo.yaml -e "mode=ambient"
+```
+
+### Key Differences
+
+| Feature | Sidecar Mode | Ambient Mode |
+|---------|--------------|--------------|
+| **Data Plane** | Sidecar proxy per pod (2 containers) | ZTunnel DaemonSet (1 container) |
+| **L7 Processing** | Sidecar proxy | Waypoint Gateway |
+| **Namespace Label** | `istio-injection=enabled` | `istio.io/dataplane-mode=ambient` |
+| **Ingress** | Istio Gateway + VirtualService | Kubernetes Gateway + HTTPRoute |
+| **Resource Overhead** | Higher (proxy per pod) | Lower (shared ZTunnel) |
+| **Upgrade Impact** | Requires pod restarts | Rolling DaemonSet update |
+
+### Verification
+
+**Sidecar Mode:**
+- BookInfo pods show `2/2 Ready` (application + sidecar)
+- Access via: `http://$(oc get route istio-ingressgateway -n istio-ingress -o jsonpath='{.spec.host}')/productpage`
+
+**Ambient Mode:**
+- BookInfo pods show `1/1 Ready` (no sidecar)
+- ZTunnel DaemonSet running in `ztunnel` namespace
+- Waypoint deployment running in `bookinfo` namespace
+- Access via: `http://$(oc get route bookinfo-edge -n bookinfo -o jsonpath='{.spec.host}')/productpage`
 
 ## Steps
 All required YAML resources are in the `./resources` folder.
