@@ -1,0 +1,14 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: bookinfo-edge
+  namespace: bookinfo
+spec:
+  # Route traffic directly into the Envoy service provisioned by your Ingress Gateway
+  to:
+    kind: Service
+    name: bookinfo-ingress-gateway-istio
+    weight: 100
+  port:
+    targetPort: http
+  wildcardPolicy: None
