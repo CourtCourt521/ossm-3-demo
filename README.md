@@ -34,15 +34,16 @@ By the end of this quickstart, you will have installed OSSM3, where tracing info
   * installs OSSM3 (Istio CR) with Kiali and OSSMC to `istio-system` namespace
   * installs IstioCNI to `istio-cni` namespace
   * installs Istio ingress gateway to `istio-ingress` namespace
-  * installs Gateway API ingress gateway to `istio-ingress` namespace
+  * installs Gateway API ingress gateway to `istio-ingress` namespace (for REST API)
   * installs bookinfo app with traffic generator in `bookinfo` namespace
   * installs RestAPI app in `rest-api-with-mesh` namespace
 
 ### Ambient Mode
-  * Same as Sidecar Mode, except:
-    * installs ZTunnel to `ztunnel` namespace (instead of sidecar proxies)
-    * installs Waypoint Gateway to `bookinfo` namespace (for L7 processing)
-    * uses Kubernetes Gateway API resources in `bookinfo` namespace (instead of `istio-ingress`)
+  * Same as Sidecar Mode for shared components (Tempo, OpenTelemetry, Kiali)
+  * installs ZTunnel to `ztunnel` namespace (instead of sidecar proxies)
+  * installs Waypoint Gateway to `bookinfo` namespace (for L7 processing)
+  * uses Kubernetes Gateway API resources in `bookinfo` namespace for ingress
+  * **Does NOT install**: REST API (sidecar mode only), Traffic Generator (sidecar mode only)
 
 ## Shortcut to the end
 To skip all the following steps and set everything up automatically (e.g., for demo purposes), simply run the prepared `./install_ossm3_demo.sh` script which will perform all steps automatically.
@@ -91,12 +92,22 @@ ansible-playbook ansible/install_ossm3_demo.yaml -e "mode=ambient"
 | **Ingress** | Istio Gateway + VirtualService | Kubernetes Gateway + HTTPRoute |
 | **Resource Overhead** | Higher (proxy per pod) | Lower (shared ZTunnel) |
 | **Upgrade Impact** | Requires pod restarts | Rolling DaemonSet update |
+| **Sample REST API** | ✅ Supported | ❌ Not configured (sidecar mode only) |
+| **Traffic Generator** | ✅ Supported | ❌ Not configured (sidecar mode only) |
+
+### Current Limitations in Ambient Mode
+
+- **Sample REST API**: Not currently configured for ambient mode. The REST API demo uses the Gateway API ingress which is only configured in sidecar mode.
+- **Traffic Generator**: Not configured for ambient mode as it uses the sidecar mode ingress route.
+
+Both of these features work only in sidecar mode for now.
 
 ### Verification
 
 **Sidecar Mode:**
 - BookInfo pods show `2/2 Ready` (application + sidecar)
 - Access via: `http://$(oc get route istio-ingressgateway -n istio-ingress -o jsonpath='{.spec.host}')/productpage`
+- REST API accessible via Gateway API ingress
 
 **Ambient Mode:**
 - BookInfo pods show `1/1 Ready` (no sidecar)
