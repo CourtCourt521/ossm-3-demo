@@ -43,7 +43,8 @@ By the end of this quickstart, you will have installed OSSM3, where tracing info
   * installs ZTunnel to `ztunnel` namespace (instead of sidecar proxies)
   * installs Waypoint Gateway to `bookinfo` namespace (for L7 processing)
   * uses Kubernetes Gateway API resources in `bookinfo` namespace for ingress
-  * **Does NOT install**: REST API (sidecar mode only), Traffic Generator (sidecar mode only)
+  * installs bookinfo app with traffic generator in `bookinfo` namespace
+  * **Does NOT install**: REST API (sidecar mode only)
 
 ## Shortcut to the end
 To skip all the following steps and set everything up automatically (e.g., for demo purposes), simply run the prepared `./install_ossm3_demo.sh` script which will perform all steps automatically.
@@ -93,14 +94,13 @@ ansible-playbook ansible/install_ossm3_demo.yaml -e "mode=ambient"
 | **Resource Overhead** | Higher (proxy per pod) | Lower (shared ZTunnel) |
 | **Upgrade Impact** | Requires pod restarts | Rolling DaemonSet update |
 | **Sample REST API** | ✅ Supported | ❌ Not configured (sidecar mode only) |
-| **Traffic Generator** | ✅ Supported | ❌ Not configured (sidecar mode only) |
+| **Traffic Generator** | ✅ Supported | ✅ Supported |
 
 ### Current Limitations in Ambient Mode
 
 - **Sample REST API**: Not currently configured for ambient mode. The REST API demo uses the Gateway API ingress which is only configured in sidecar mode.
-- **Traffic Generator**: Not configured for ambient mode as it uses the sidecar mode ingress route.
 
-Both of these features work only in sidecar mode for now.
+**Note**: The traffic generator works in ambient mode because it simply makes HTTP requests to the BookInfo ingress URL. The generator pod participates in the ambient mesh through ZTunnel, and traffic flows through the Waypoint Gateway to reach the ProductPage service.
 
 ### Verification
 
@@ -111,9 +111,11 @@ Both of these features work only in sidecar mode for now.
 
 **Ambient Mode:**
 - BookInfo pods show `1/1 Ready` (no sidecar)
+- Traffic generator pod shows `1/1 Ready` (no sidecar)
 - ZTunnel DaemonSet running in `ztunnel` namespace
 - Waypoint deployment running in `bookinfo` namespace
 - Access via: `http://$(oc get route bookinfo-edge -n bookinfo -o jsonpath='{.spec.host}')/productpage`
+- Traffic generator automatically sends requests through ambient mesh (ZTunnel → Waypoint → ProductPage)
 
 ## Steps
 All required YAML resources are in the `./resources` folder.
