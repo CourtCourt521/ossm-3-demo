@@ -4,12 +4,15 @@
   gather_facts: no
 
   vars:
+    install_mode: "{{ mode | default('sidecar') }}"
     namespace_tracing_system: "tracing-system"
     namespace_opentelemetrycollector: "opentelemetrycollector"
     namespace_istio_system: "istio-system"
+    namespace_istio_cni: "istio-cni"
     namespace_istio_ingress: "istio-ingress"
     namespace_bookinfo: "bookinfo"
     namespace_sample_restapi: "sample-restapi"
+    namespace_ztunnel: "ztunnel"
     tracing_ui_name: "tracing-ui"
     ingress_gateway_name: "istio-ingressgateway"
     bookinfo_pods_timeout: 60s
@@ -102,48 +105,282 @@
       retries: 6
       delay: 10
 
-    - name: Create istio-system namespace
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ namespace_istio_system }}"
+    - name: Validate installation mode
+      fail:
+        msg: "Invalid installation mode '{{ install_mode }}'. Must be 'sidecar' or 'ambient'."
+      when: install_mode not in ['sidecar', 'ambient']
 
-    - name: Install IstioCR
-      kubernetes.core.k8s:
-        state: present
-        namespace: "{{ namespace_istio_system }}"
-        definition: "{{ lookup('file', './resources/OSSM3/istiocr.yaml') }}"
+    # Sidecar Mode Installation
+    - name: Install Sidecar Mode Components
+      block:
+        - name: Create istio-system namespace
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_istio_system }}"
 
-    - name: Wait for IstioCR readiness
-      kubernetes.core.k8s_info:
-        api_version: networking.istio.io/v1alpha3
-        kind: Istio
-        namespace: "{{ namespace_istio_system }}"
-        name: default
-      until: item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True')
-      retries: 6
-      delay: 10
+        - name: Install IstioCR (sidecar profile)
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_system }}"
+            definition: "{{ lookup('file', './resources/OSSM3/istiocr.yaml') }}"
 
-    - name: Install Telemetry resource
-      kubernetes.core.k8s:
-        state: present
-        namespace: "{{ namespace_istio_system }}"
-        definition: "{{ lookup('file', './resources/TempoOtel/istioTelemetry.yaml') }}"
+        - name: Wait for IstioCR readiness
+          kubernetes.core.k8s_info:
+            api_version: networking.istio.io/v1alpha3
+            kind: Istio
+            namespace: "{{ namespace_istio_system }}"
+            name: default
+          until: item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True')
+          retries: 6
+          delay: 10
 
-    - name: Label OpenTelemetryCollector namespace
-      kubernetes.core.k8s:
-        state: merge
-        namespace: "{{ namespace_opentelemetrycollector }}"
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ namespace_opentelemetrycollector }}"
-            labels:
-              istio-injection: enabled
+        - name: Install Telemetry resource
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_system }}"
+            definition: "{{ lookup('file', './resources/TempoOtel/istioTelemetry.yaml') }}"
+
+        - name: Label OpenTelemetryCollector namespace
+          kubernetes.core.k8s:
+            state: merge
+            namespace: "{{ namespace_opentelemetrycollector }}"
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_opentelemetrycollector }}"
+                labels:
+                  istio-injection: enabled
+
+        - name: Create istio-cni namespace
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_istio_cni }}"
+
+        - name: Install IstioCNI (sidecar profile)
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_cni }}"
+            definition: "{{ lookup('file', './resources/OSSM3/istioCni.yaml') }}"
+
+        - name: Wait for IstioCNI readiness
+          kubernetes.core.k8s_info:
+            api_version: sailoperator.io/v1
+            kind: IstioCNI
+            namespace: "{{ namespace_istio_cni }}"
+            name: default
+          until: item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True')
+          retries: 6
+          delay: 10
+
+        - name: Create istio-ingress namespace
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_istio_ingress }}"
+                labels:
+                  istio-injection: enabled
+
+        - name: Install Istio Ingress Gateway
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_ingress }}"
+            definition: "{{ lookup('file', './resources/OSSM3/istioIngressGateway.yaml') }}"
+
+        - name: Wait for Ingress Gateway deployment
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: Deployment
+            namespace: "{{ namespace_istio_ingress }}"
+            name: "{{ ingress_gateway_name }}"
+          until: item.status.availableReplicas > 0
+          retries: 6
+          delay: 10
+
+        - name: Expose Istio Ingress Gateway route
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_ingress }}"
+            definition:
+              apiVersion: route.openshift.io/v1
+              kind: Route
+              metadata:
+                name: "{{ ingress_gateway_name }}"
+              spec:
+                to:
+                  kind: Service
+                  name: "{{ ingress_gateway_name }}"
+                port:
+                  targetPort: http2
+      when: install_mode == "sidecar"
+
+    # Ambient Mode Installation
+    - name: Install Ambient Mode Components
+      block:
+        - name: Create istio-system namespace with discovery label
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_istio_system }}"
+                labels:
+                  istio-discovery: enabled
+
+        - name: Install Istio CR (ambient profile)
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_system }}"
+            definition: "{{ lookup('file', './resources/OSSM3Ambient/istioambientcr.yaml') }}"
+
+        - name: Wait for Istio CR readiness
+          kubernetes.core.k8s_info:
+            api_version: sailoperator.io/v1
+            kind: Istio
+            namespace: "{{ namespace_istio_system }}"
+            name: default
+          register: istio_ambient_info
+          until: istio_ambient_info.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+          retries: 15
+          delay: 10
+
+        - name: Install Telemetry resource
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_system }}"
+            definition: "{{ lookup('file', './resources/TempoOtel/istioTelemetry.yaml') }}"
+
+        - name: Create istio-cni namespace with discovery label
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_istio_cni }}"
+                labels:
+                  istio-discovery: enabled
+
+        - name: Install IstioCNI (ambient profile)
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_cni }}"
+            definition: "{{ lookup('file', './resources/OSSM3Ambient/istioambientCni.yaml') }}"
+
+        - name: Wait for IstioCNI readiness
+          kubernetes.core.k8s_info:
+            api_version: sailoperator.io/v1
+            kind: IstioCNI
+            namespace: "{{ namespace_istio_cni }}"
+            name: default
+          register: istiocni_ambient_info
+          until: istiocni_ambient_info.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+          retries: 15
+          delay: 10
+
+        - name: Create ztunnel namespace
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_ztunnel }}"
+
+        - name: Install ZTunnel
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_ztunnel }}"
+            definition: "{{ lookup('file', './resources/OSSM3Ambient/ztunnel.yaml') }}"
+
+        - name: Wait for ZTunnel readiness
+          kubernetes.core.k8s_info:
+            api_version: sailoperator.io/v1alpha1
+            kind: ZTunnel
+            namespace: "{{ namespace_ztunnel }}"
+            name: default
+          register: ztunnel_info
+          until: ztunnel_info.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+          retries: 15
+          delay: 10
+
+        - name: Wait for ZTunnel DaemonSet pods
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ namespace_ztunnel }}"
+            label_selectors:
+              - app=ztunnel
+          register: ztunnel_pods
+          until: ztunnel_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+          retries: 15
+          delay: 10
+
+        - name: Label OpenTelemetryCollector namespace
+          kubernetes.core.k8s:
+            state: merge
+            namespace: "{{ namespace_opentelemetrycollector }}"
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_opentelemetrycollector }}"
+                labels:
+                  istio-injection: enabled
+
+        - name: Create istio-ingress namespace for Gateway API (ambient mode)
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_istio_ingress }}"
+                labels:
+                  istio.io/dataplane-mode: ambient
+
+        - name: Install Gateway API resources (ambient mode)
+          shell: oc apply -k ./resources/gateway
+
+        - name: Wait for hello-gateway to be programmed (ambient mode)
+          kubernetes.core.k8s_info:
+            api_version: gateway.networking.k8s.io/v1
+            kind: Gateway
+            namespace: "{{ namespace_istio_ingress }}"
+            name: hello-gateway
+          register: hello_gateway
+          until: hello_gateway.resources[0].status.conditions | selectattr('type', 'equalto', 'Programmed') | selectattr('status', 'equalto', 'True') | list | length > 0
+          retries: 6
+          delay: 10
+
+        - name: Expose hello-gateway via OpenShift Route (ambient mode)
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_ingress }}"
+            definition:
+              apiVersion: route.openshift.io/v1
+              kind: Route
+              metadata:
+                name: hello-gateway
+              spec:
+                to:
+                  kind: Service
+                  name: hello-gateway-istio
+                port:
+                  targetPort: http
+      when: install_mode == "ambient"
 
     - name: Install KialiCR
       kubernetes.core.k8s:
@@ -161,43 +398,173 @@
       retries: 6
       delay: 10
 
-    - name: Create Bookinfo namespace
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ namespace_bookinfo }}"
+    # Sidecar Mode BookInfo Installation
+    - name: Install BookInfo (Sidecar Mode)
+      block:
+        - name: Create bookinfo namespace
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_bookinfo }}"
+                labels:
+                  istio-injection: enabled
 
-    - name: Label Bookinfo namespace
-      kubernetes.core.k8s:
-        state: merge
-        namespace: "{{ namespace_bookinfo }}"
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ namespace_bookinfo }}"
-            labels:
-              istio-injection: enabled
+        - name: Enable pod monitor in bookinfo namespace
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_bookinfo }}"
+            definition: "{{ lookup('file', './resources/Monitoring/podMonitor.yaml') }}"
 
-    - name: Install Bookinfo application
-      kubernetes.core.k8s:
-        state: present
-        namespace: "{{ namespace_bookinfo }}"
-        definition: "{{ lookup('file', './resources/Bookinfo/bookinfo.yaml') }}"
+        - name: Install Bookinfo application
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_bookinfo }}"
+            definition: "{{ lookup('file', './resources/Bookinfo/bookinfo.yaml') }}"
 
-    - name: Wait for Bookinfo pods to become ready
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Pod
-        namespace: "{{ namespace_bookinfo }}"
-      until: item.status.phase == "Running"
-      retries: 6
-      delay: 10
+        - name: Wait for Bookinfo pods to become ready
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ namespace_bookinfo }}"
+          register: bookinfo_pods
+          until: bookinfo_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+          retries: 15
+          delay: 10
 
-    - name: Create Sample RestAPI namespace
+        - name: Install Bookinfo Gateway and VirtualService
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_bookinfo }}"
+            definition: "{{ lookup('file', './resources/Bookinfo/bookinfo-gateway.yaml') }}"
+      when: install_mode == "sidecar"
+
+    # Ambient Mode BookInfo Installation
+    - name: Install BookInfo (Ambient Mode)
+      block:
+        - name: Create bookinfo namespace with ambient label
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_bookinfo }}"
+                labels:
+                  istio.io/dataplane-mode: ambient
+
+        - name: Enable pod monitor in bookinfo namespace
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_bookinfo }}"
+            definition: "{{ lookup('file', './resources/Monitoring/podMonitor.yaml') }}"
+
+        - name: Install Bookinfo application
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_bookinfo }}"
+            definition: "{{ lookup('file', './resources/Bookinfo/bookinfo.yaml') }}"
+
+        - name: Wait for Bookinfo pods to become ready
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ namespace_bookinfo }}"
+          register: bookinfo_pods_ambient
+          until: bookinfo_pods_ambient.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+          retries: 15
+          delay: 10
+
+        - name: Apply Waypoint Gateway
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_bookinfo }}"
+            definition: "{{ lookup('file', './resources/OSSM3Ambient/waypointgateway.yaml') }}"
+
+        - name: Wait for Waypoint Gateway to be programmed
+          kubernetes.core.k8s_info:
+            api_version: gateway.networking.k8s.io/v1
+            kind: Gateway
+            namespace: "{{ namespace_bookinfo }}"
+            name: bookinfo-waypoint
+          register: waypoint_info
+          until: waypoint_info.resources[0].status.conditions | selectattr('type', 'equalto', 'Programmed') | selectattr('status', 'equalto', 'True') | list | length > 0
+          retries: 15
+          delay: 10
+
+        - name: Wait for Waypoint deployment
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: Deployment
+            namespace: "{{ namespace_bookinfo }}"
+            name: bookinfo-waypoint
+          register: waypoint_deployment
+          until: waypoint_deployment.resources[0].status.availableReplicas | default(0) > 0
+          retries: 15
+          delay: 10
+
+        - name: Label namespace to use Waypoint
+          kubernetes.core.k8s:
+            state: merge
+            namespace: "{{ namespace_bookinfo }}"
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_bookinfo }}"
+                labels:
+                  istio.io/use-waypoint: bookinfo-waypoint
+                  istio.io/ingress-use-waypoint: "true"
+
+        - name: Apply BookInfo Kubernetes Gateway
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_bookinfo }}"
+            definition: "{{ lookup('file', './resources/OSSM3Ambient/bookinfogateway.yaml') }}"
+
+        - name: Wait for Gateway to be programmed
+          kubernetes.core.k8s_info:
+            api_version: gateway.networking.k8s.io/v1
+            kind: Gateway
+            namespace: "{{ namespace_bookinfo }}"
+            name: bookinfo-ingress-gateway
+          register: ingress_gateway
+          until: ingress_gateway.resources[0].status.conditions | selectattr('type', 'equalto', 'Programmed') | selectattr('status', 'equalto', 'True') | list | length > 0
+          retries: 6
+          delay: 10
+
+        - name: Apply BookInfo OpenShift Route
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_bookinfo }}"
+            definition: "{{ lookup('file', './resources/OSSM3Ambient/routebookinfo.yaml') }}"
+
+        - name: Wait for route to be created
+          pause:
+            seconds: 5
+
+        - name: Get BookInfo route hostname
+          kubernetes.core.k8s_info:
+            api_version: route.openshift.io/v1
+            kind: Route
+            namespace: "{{ namespace_bookinfo }}"
+            name: bookinfo-edge
+          register: bookinfo_route
+
+        - name: Set route hostname fact
+          set_fact:
+            bookinfo_route_hostname: "{{ bookinfo_route.resources[0].spec.host }}"
+
+        - name: Apply HTTPRoute with dynamic hostname
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_bookinfo }}"
+            definition: "{{ lookup('template', './templates/HTTPRoutebookinfo.yaml.j2') }}"
+      when: install_mode == "ambient"
+
+    - name: Create Sample RestAPI namespace (sidecar mode)
       kubernetes.core.k8s:
         state: present
         definition:
@@ -205,13 +572,30 @@
           kind: Namespace
           metadata:
             name: "{{ namespace_sample_restapi }}"
+            labels:
+              istio-injection: enabled
+      when: install_mode == "sidecar"
 
-    - name: Install Sample RestAPI application
+    - name: Create Sample RestAPI namespace (ambient mode)
       kubernetes.core.k8s:
         state: present
-        namespace: "{{ namespace_sample_restapi }}"
-        definition: "{{ lookup('file', './resources/application/kustomize/overlays/pod.yaml') }}"
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ namespace_sample_restapi }}"
+            labels:
+              istio.io/dataplane-mode: ambient
+      when: install_mode == "ambient"
+
+    - name: Install Sample RestAPI application (sidecar mode)
+      shell: oc apply -k ./resources/application/kustomize/overlays/pod
+      when: install_mode == "sidecar"
+
+    - name: Install Sample RestAPI application (ambient mode)
+      shell: oc apply -k ./resources/application/kustomize/overlays/ambient
+      when: install_mode == "ambient"
 
     - name: Display installation completion message
       debug:
-        msg: "OSSM3 demo setup completed successfully."
+        msg: "OSSM3 demo setup completed successfully in {{ install_mode }} mode."

@@ -1,0 +1,27 @@
+# Template file for HTTPRoute with dynamic cluster domain
+# Used by install_ossm3_demo.sh with envsubst
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: bookinfo-route
+  namespace: bookinfo
+spec:
+  parentRefs:
+  - name: bookinfo-ingress-gateway
+    namespace: bookinfo
+  hostnames:
+  - "${BOOKINFO_ROUTE_HOSTNAME}"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /productpage
+    - path:
+        type: PathPrefix
+        value: /static
+    - path:
+        type: PathPrefix
+        value: /api/v1/products
+    backendRefs:
+    - name: productpage
+      port: 9080
