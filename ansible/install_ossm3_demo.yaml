@@ -339,6 +339,47 @@
                 name: "{{ namespace_opentelemetrycollector }}"
                 labels:
                   istio-injection: enabled
+
+        - name: Create istio-ingress namespace for Gateway API (ambient mode)
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ namespace_istio_ingress }}"
+                labels:
+                  istio.io/dataplane-mode: ambient
+
+        - name: Install Gateway API resources (ambient mode)
+          shell: oc apply -k ./resources/gateway
+
+        - name: Wait for hello-gateway to be programmed (ambient mode)
+          kubernetes.core.k8s_info:
+            api_version: gateway.networking.k8s.io/v1
+            kind: Gateway
+            namespace: "{{ namespace_istio_ingress }}"
+            name: hello-gateway
+          register: hello_gateway
+          until: hello_gateway.resources[0].status.conditions | selectattr('type', 'equalto', 'Programmed') | selectattr('status', 'equalto', 'True') | list | length > 0
+          retries: 6
+          delay: 10
+
+        - name: Expose hello-gateway via OpenShift Route (ambient mode)
+          kubernetes.core.k8s:
+            state: present
+            namespace: "{{ namespace_istio_ingress }}"
+            definition:
+              apiVersion: route.openshift.io/v1
+              kind: Route
+              metadata:
+                name: hello-gateway
+              spec:
+                to:
+                  kind: Service
+                  name: hello-gateway-istio
+                port:
+                  targetPort: http
       when: install_mode == "ambient"
 
     - name: Install KialiCR
@@ -523,7 +564,7 @@
             definition: "{{ lookup('template', './templates/HTTPRoutebookinfo.yaml.j2') }}"
       when: install_mode == "ambient"
 
-    - name: Create Sample RestAPI namespace
+    - name: Create Sample RestAPI namespace (sidecar mode)
       kubernetes.core.k8s:
         state: present
         definition:
@@ -531,12 +572,29 @@
           kind: Namespace
           metadata:
             name: "{{ namespace_sample_restapi }}"
+            labels:
+              istio-injection: enabled
+      when: install_mode == "sidecar"
 
-    - name: Install Sample RestAPI application
+    - name: Create Sample RestAPI namespace (ambient mode)
       kubernetes.core.k8s:
         state: present
-        namespace: "{{ namespace_sample_restapi }}"
-        definition: "{{ lookup('file', './resources/application/kustomize/overlays/pod.yaml') }}"
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ namespace_sample_restapi }}"
+            labels:
+              istio.io/dataplane-mode: ambient
+      when: install_mode == "ambient"
+
+    - name: Install Sample RestAPI application (sidecar mode)
+      shell: oc apply -k ./resources/application/kustomize/overlays/pod
+      when: install_mode == "sidecar"
+
+    - name: Install Sample RestAPI application (ambient mode)
+      shell: oc apply -k ./resources/application/kustomize/overlays/ambient
+      when: install_mode == "ambient"
 
     - name: Display installation completion message
       debug:

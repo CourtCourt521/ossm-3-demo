@@ -44,7 +44,7 @@ By the end of this quickstart, you will have installed OSSM3, where tracing info
   * installs Waypoint Gateway to `bookinfo` namespace (for L7 processing)
   * uses Kubernetes Gateway API resources in `bookinfo` namespace for ingress
   * installs bookinfo app with traffic generator in `bookinfo` namespace
-  * **Does NOT install**: REST API (sidecar mode only)
+  * installs RestAPI app in `rest-api-with-mesh` namespace (ambient mode enabled)
 
 ## Shortcut to the end
 To skip all the following steps and set everything up automatically (e.g., for demo purposes), simply run the prepared `./install_ossm3_demo.sh` script which will perform all steps automatically.
@@ -93,29 +93,34 @@ ansible-playbook ansible/install_ossm3_demo.yaml -e "mode=ambient"
 | **Ingress** | Istio Gateway + VirtualService | Kubernetes Gateway + HTTPRoute |
 | **Resource Overhead** | Higher (proxy per pod) | Lower (shared ZTunnel) |
 | **Upgrade Impact** | Requires pod restarts | Rolling DaemonSet update |
-| **Sample REST API** | ✅ Supported | ❌ Not configured (sidecar mode only) |
+| **Sample REST API** | ✅ Supported | ✅ Supported |
 | **Traffic Generator** | ✅ Supported | ✅ Supported |
 
-### Current Limitations in Ambient Mode
+### Ambient Mode Features
 
-- **Sample REST API**: Not currently configured for ambient mode. The REST API demo uses the Gateway API ingress which is only configured in sidecar mode.
+Both the REST API and traffic generator work seamlessly in ambient mode:
 
-**Note**: The traffic generator works in ambient mode because it simply makes HTTP requests to the BookInfo ingress URL. The generator pod participates in the ambient mesh through ZTunnel, and traffic flows through the Waypoint Gateway to reach the ProductPage service.
+- **Traffic Generator**: Makes HTTP requests to the BookInfo ingress URL. The generator pod participates in the ambient mesh through ZTunnel, and traffic flows through the Waypoint Gateway to reach the ProductPage service.
+
+- **REST API**: Uses the existing Gateway API infrastructure in `istio-ingress` namespace. The REST API pods in `rest-api-with-mesh` namespace are labeled with `istio.io/dataplane-mode: ambient`, allowing them to participate in the ambient mesh without sidecars. Traffic flows through the shared `hello-gateway` to reach the services.
 
 ### Verification
 
 **Sidecar Mode:**
 - BookInfo pods show `2/2 Ready` (application + sidecar)
-- Access via: `http://$(oc get route istio-ingressgateway -n istio-ingress -o jsonpath='{.spec.host}')/productpage`
-- REST API accessible via Gateway API ingress
+- REST API pods show `2/2 Ready` (application + sidecar)
+- Access BookInfo via: `http://$(oc get route istio-ingressgateway -n istio-ingress -o jsonpath='{.spec.host}')/productpage`
+- Test REST API: `sh ./scripts/test-api.sh`
 
 **Ambient Mode:**
 - BookInfo pods show `1/1 Ready` (no sidecar)
+- REST API pods show `1/1 Ready` (no sidecar)
 - Traffic generator pod shows `1/1 Ready` (no sidecar)
 - ZTunnel DaemonSet running in `ztunnel` namespace
 - Waypoint deployment running in `bookinfo` namespace
-- Access via: `http://$(oc get route bookinfo-edge -n bookinfo -o jsonpath='{.spec.host}')/productpage`
-- Traffic generator automatically sends requests through ambient mesh (ZTunnel → Waypoint → ProductPage)
+- Access BookInfo via: `http://$(oc get route bookinfo-edge -n bookinfo -o jsonpath='{.spec.host}')/productpage`
+- Test REST API: `sh ./scripts/test-api.sh` (uses same Gateway API infrastructure)
+- Traffic flows: Client → Gateway (istio-ingress) → ZTunnel → Service
 
 ## Steps
 All required YAML resources are in the `./resources` folder.

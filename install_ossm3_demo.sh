@@ -108,14 +108,24 @@ if [[ "$INSTALL_MODE" == "sidecar" ]]; then
     oc apply -k ./resources/gateway
 
     echo "Creating ingress gateway via Istio Deployment..."
-    #oc new-project istio-ingress
-    #echo "Adding istio-ingress namespace as a part of the mesh"
-    #oc label namespace istio-ingress istio-injection=enabled
     oc apply -f ./resources/OSSM3/istioIngressGateway.yaml  -n istio-ingress
     echo "Waiting for deployment/istio-ingressgateway to become available..."
     oc wait --for condition=Available deployment/istio-ingressgateway --timeout 60s -n istio-ingress
     echo "Exposing Istio ingress route"
     oc expose svc istio-ingressgateway --port=http2 --name=istio-ingressgateway -n istio-ingress
+fi
+
+if [[ "$INSTALL_MODE" == "ambient" ]]; then
+    echo "Creating Gateway API infrastructure for REST API (ambient mode)..."
+    oc new-project istio-ingress
+    echo "Adding istio-ingress namespace to ambient mesh"
+    oc label namespace istio-ingress istio.io/dataplane-mode=ambient
+    oc apply -k ./resources/gateway
+    echo "Waiting for Gateway to be programmed..."
+    oc wait --for=condition=Programmed gateway/hello-gateway -n istio-ingress --timeout=60s
+
+    echo "Exposing hello-gateway via OpenShift Route..."
+    oc expose svc hello-gateway-istio --port=http --name=hello-gateway -n istio-ingress
 fi
 
 echo "Enabling user workload monitoring in OCP"
@@ -141,8 +151,13 @@ oc annotate route kiali haproxy.router.openshift.io/timeout=60s -n istio-system
 echo "Install Kiali OSSM Console plugin..."
 oc apply -f ./resources/Kiali/kialiOssmcCr.yaml -n istio-system
 
-echo "Installing Sample RestAPI..."
-oc apply -k ./resources/application/kustomize/overlays/pod 
+if [[ "$INSTALL_MODE" == "sidecar" ]]; then
+    echo "Installing Sample RestAPI (sidecar mode)..."
+    oc apply -k ./resources/application/kustomize/overlays/pod
+else
+    echo "Installing Sample RestAPI (ambient mode)..."
+    oc apply -k ./resources/application/kustomize/overlays/ambient
+fi 
 
 echo "Installing Bookinfo application..."
 oc new-project bookinfo
