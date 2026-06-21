@@ -123,16 +123,29 @@ Both the REST API and traffic generator work seamlessly in ambient mode:
 - Traffic flows: Client → Gateway (istio-ingress) → ZTunnel → Service
 
 ## Steps
+
 All required YAML resources are in the `./resources` folder.
 For a more detailed description about what is set and why, see OpenShift Service Mesh documentation.
-  
-Enable Gateway API  (only if you did not run the `./install_operators.sh` script)
-------------  
+
+The installation is divided into:
+1. **Common Setup** - Components shared by both modes
+2. **Mode Selection** - Choose Sidecar or Ambient mode
+3. **Common Post-Installation** - Monitoring and observability (shared by both modes)
+4. **Testing** - Verify your installation
+
+---
+
+## 1. Common Setup (Both Modes)
+
+These steps are identical for both Sidecar and Ambient modes.
+
+### Enable Gateway API
+Only if you did not run the `./install_operators.sh` script
 ```bash
 oc get crd gateways.gateway.networking.k8s.io &> /dev/null ||  { oc kustomize "github.com/kubernetes-sigs/gateway-api/config/crd?ref=v1.0.0" | oc apply -f -; }
 ```
 
-Set up Tempo and OpenTelemetryCollector  
+### Set up Tempo and OpenTelemetryCollector
 ------------  
 ```bash
 oc new-project tracing-system
@@ -159,36 +172,49 @@ oc apply -f ./resources/TempoOtel/opentelemetrycollector.yaml -n opentelemetryco
 oc wait --for condition=Available deployment/otel-collector --timeout 60s -n opentelemetrycollector
 ```
 
-Set up OSSM3
-------------
+---
+
+## 2. Mode Selection
+
+**Choose your installation mode:** Sidecar (traditional) or Ambient (next-gen). Follow only ONE of the sections below.
+
+<details>
+<summary><b>Option A: Sidecar Mode Installation</b> (click to expand)</summary>
+
+### Set up OSSM3 (Sidecar Mode)
+
+Create istio-system namespace
 ```bash
 oc new-project istio-system
 ```
-First, install Istio custom resource
+
+Install Istio custom resource
 > **_NOTE:_**  In this example, the `.spec.version` is missing so the istio version is automatically set by OSSM operator. You can specify the version manually, but it must be one that is supported by the operator; otherwise, a validation error will occur.
 ```bash
 oc apply -f ./resources/OSSM3/istiocr.yaml  -n istio-system
 oc wait --for condition=Ready istio/default --timeout 60s  -n istio-system
 ```
-Then, set up Telemetry resource to enable tracers defined in Istio custom resource
+
+Set up Telemetry resource to enable tracers defined in Istio custom resource
 ```bash
 oc apply -f ./resources/TempoOtel/istioTelemetry.yaml  -n istio-system
 ```
+
 The opentelemetrycollector namespace needs to be added as a member of the mesh
 ```bash
 oc label namespace opentelemetrycollector istio-injection=enabled
 ```
 > **_NOTE:_** `istio-injection=enabled` label works only when the name of Istio CR is `default`. If you use a different name as `default`, you need to use `istio.io/rev=<istioCR_NAME>` label instead of `istio-injection=enabled` in the all next steps of this example. Also, you will need to update values `config_map_name`, `istio_sidecar_injector_config_map_name`, `istiod_deployment_name`, `url_service_version` in the Kiali CR.
 
-Then, install IstioCNI
-> **_NOTE:_**  In this example, the `.spec.version` is missing so the istio version is automatically set by OSSM operator. the `.spec.version` is missing so the istio version is automatically set by OSSM operator. You can specify the version manually, but it must be one that is supported by the operator.
+Install IstioCNI
+> **_NOTE:_**  In this example, the `.spec.version` is missing so the istio version is automatically set by OSSM operator. You can specify the version manually, but it must be one that is supported by the operator.
 ```bash
 oc new-project istio-cni
 oc apply -f ./resources/OSSM3/istioCni.yaml -n istio-cni
 oc wait --for condition=Ready istiocni/default --timeout 60s -n istio-cni
 ```
 
-Set up the ingress gateway via istio in a different namespace as istio-system.
+Set up the ingress gateway via Istio in a different namespace than istio-system.
 Add that namespace as a member of the mesh.
 ```bash
 oc new-project istio-ingress
@@ -196,60 +222,26 @@ oc label namespace istio-ingress istio-injection=enabled
 oc apply -f ./resources/OSSM3/istioIngressGateway.yaml  -n istio-ingress
 oc wait --for condition=Available deployment/istio-ingressgateway --timeout 60s -n istio-ingress
 ```
-Expose Istio ingress route which will be used in the bookinfo traffic generator later (and via that URL, we will be accessing to the bookinfo app)
+
+Expose Istio ingress route which will be used in the bookinfo traffic generator later (and via that URL, we will be accessing the bookinfo app)
 ```bash
 oc expose svc istio-ingressgateway --port=http2 --name=istio-ingressgateway -n istio-ingress
 ```
+
 Set up the ingress gateway via Gateway API (this will live next to the previously created gateway in the same namespace)
 ```bash
 oc apply -k ./resources/gateway
 ```
 
-Set up OCP user monitoring workflow
-------------
-First, OCP user monitoring needs to be enabled
-```bash
-oc apply -f ./resources/Monitoring/ocpUserMonitoring.yaml
-```
-Then, create service monitor and pod monitor for istio namespaces
-```bash
-oc apply -f ./resources/Monitoring/serviceMonitor.yaml -n istio-system
-oc apply -f ./resources/Monitoring/podMonitor.yaml -n istio-system
-oc apply -f ./resources/Monitoring/podMonitor.yaml -n istio-ingress
-```
+### Set up BookInfo (Sidecar Mode)
 
-Set up Kiali
-------------
-Create cluster role binding for kiali to be able to read ocp monitoring
-```bash
-oc apply -f ./resources/Kiali/kialiCrb.yaml -n istio-system
-```
-Set up Kiali CR. The URL for Jaeger UI (which was exposed earlier) needs to be set to Kiali CR in `.spec.external_services.tracing.url`
-> **_NOTE:_**  In this example, the `.spec.version` is missing so the istio version is automatically set by Kiali operator. You can specify the version manually, but it must be one that is supported by the operator; otherwise, an error will appear in events on the Kiali resource.
-```bash
-export TRACING_INGRESS_ROUTE="http://$(oc get -n tracing-system route tracing-ui -o jsonpath='{.spec.host}')"
-cat ./resources/Kiali/kialiCr.yaml | JAEGERROUTE="${TRACING_INGRESS_ROUTE}" envsubst | oc -n istio-system apply -f -
-oc wait --for condition=Successful kiali/kiali --timeout 150s -n istio-system 
-```
-Increase timeout for the Kiali ui route in OCP since big queries for spans can take longer
-```bash
-oc annotate route kiali haproxy.router.openshift.io/timeout=60s -n istio-system
-```
-Optionally, OSSMC plugin can be installed as well
-> **_NOTE:_**  In this example, the `.spec.version` is missing so the istio version is automatically set by Kiali operator. You can specify the version manually, but it must be one that is supported by the operator and the version needs to be **the same as Kiali CR**.
-```bash
-oc apply -f ./resources/Kiali/kialiOssmcCr.yaml -n istio-system
-oc wait -n istio-system --for=condition=Successful OSSMConsole ossmconsole --timeout 120s
-```
-
-Set up BookInfo
-------------
 Create bookinfo namespace and add that namespace as a member of the mesh
 ```bash
 oc new-project bookinfo
 oc label namespace bookinfo istio-injection=enabled
 ```
-Create pod monitor for bookinfo namespaces
+
+Create pod monitor for bookinfo namespace
 ```bash
 oc apply -f ./resources/Monitoring/podMonitor.yaml -n bookinfo
 ```
@@ -262,40 +254,251 @@ oc apply -f ./resources/Bookinfo/bookinfo-gateway.yaml -n bookinfo
 oc wait --for=condition=Ready pods --all -n bookinfo --timeout 60s
 ```
 
-Optionally, install a traffic generator for booking app which every second generates a request to simulate traffic
+Optionally, install a traffic generator for bookinfo app which every second generates a request to simulate traffic
 ```bash
 export INGRESSHOST=$(oc get route istio-ingressgateway -n istio-ingress -o=jsonpath='{.spec.host}')
 cat ./resources/Bookinfo/traffic-generator-configmap.yaml | ROUTE="http://${INGRESSHOST}/productpage" envsubst | oc -n bookinfo apply -f - 
 oc apply -f ./resources/Bookinfo/traffic-generator.yaml -n bookinfo
 ```
-  
-Set up sample RestAPI    
-------------  
+
+### Set up sample RestAPI (Sidecar Mode)
 
 Install the sample RestAPI `hello-service` via Kustomize
 ```bash
 oc apply -k ./resources/application/kustomize/overlays/pod 
 ```
 
-Test that everything works correctly
-------------
-Now, everything should be set.  
+Test the REST API endpoints:
+```bash
+sh ./scripts/test-api.sh
+```
 
-Check the Bookinfo app via the ingress route
+</details>
+
+<details>
+<summary><b>Option B: Ambient Mode Installation</b> (click to expand)</summary>
+
+### Set up OSSM3 (Ambient Mode)
+
+Create istio-system namespace with discovery label
+```bash
+oc new-project istio-system
+oc label namespace istio-system istio-discovery=enabled
+```
+
+Install Istio custom resource with ambient profile
+> **_NOTE:_**  In this example, the `.spec.version` is missing so the istio version is automatically set by OSSM operator. You can specify the version manually, but it must be one that is supported by the operator.
+```bash
+oc apply -f ./resources/OSSM3Ambient/istioambientcr.yaml -n istio-system
+oc wait --for condition=Ready istio/default --timeout 150s -n istio-system
+```
+
+Set up Telemetry resource to enable tracers
+```bash
+oc apply -f ./resources/TempoOtel/istioTelemetry.yaml -n istio-system
+```
+
+Create istio-cni namespace with discovery label
+```bash
+oc create namespace istio-cni
+oc label namespace istio-cni istio-discovery=enabled
+```
+
+Install IstioCNI with ambient profile
+```bash
+oc apply -f ./resources/OSSM3Ambient/istioambientCni.yaml -n istio-cni
+oc wait --for condition=Ready istiocni/default --timeout 150s -n istio-cni
+```
+
+Create ztunnel namespace and install ZTunnel (ambient data plane)
+```bash
+oc create namespace ztunnel
+oc apply -f ./resources/OSSM3Ambient/ztunnel.yaml -n ztunnel
+oc wait --for condition=Ready ztunnel/default --timeout 150s -n ztunnel
+oc wait --for=condition=Ready pods -l app=ztunnel -n ztunnel --timeout=150s
+```
+
+Add opentelemetrycollector namespace to the mesh
+```bash
+oc label namespace opentelemetrycollector istio-injection=enabled
+```
+
+Create Gateway API infrastructure for REST API
+```bash
+oc new-project istio-ingress
+oc label namespace istio-ingress istio.io/dataplane-mode=ambient
+oc apply -k ./resources/gateway
+oc wait --for=condition=Programmed gateway/hello-gateway -n istio-ingress --timeout=60s
+```
+
+Expose hello-gateway via OpenShift Route
+```bash
+oc expose svc hello-gateway-istio --port=http --name=hello-gateway -n istio-ingress
+```
+
+### Set up BookInfo (Ambient Mode)
+
+Create bookinfo namespace with ambient label
+```bash
+oc new-project bookinfo
+oc label namespace bookinfo istio.io/dataplane-mode=ambient
+```
+
+Create pod monitor for bookinfo namespace
+```bash
+oc apply -f ./resources/Monitoring/podMonitor.yaml -n bookinfo
+```
+> **_NOTE(shortcut):_**  It takes some time till pod monitor shows in Metrics targets, you can check it in OCP console Observe->Targets. The Kiali UI will not show the metrics till the targets are ready.
+
+Install the Bookinfo app
+```bash
+oc apply -f ./resources/Bookinfo/bookinfo.yaml -n bookinfo
+oc wait --for=condition=Ready pods --all -n bookinfo --timeout 150s
+```
+
+Install Waypoint Gateway for L7 processing
+```bash
+oc apply -f ./resources/OSSM3Ambient/waypointgateway.yaml -n bookinfo
+oc wait --for=condition=Programmed gateway/bookinfo-waypoint -n bookinfo --timeout=150s
+oc wait --for=condition=Available deployment/bookinfo-waypoint -n bookinfo --timeout=150s
+```
+
+Configure namespace to use Waypoint
+```bash
+oc label namespace bookinfo istio.io/use-waypoint=bookinfo-waypoint
+oc label namespace bookinfo istio.io/ingress-use-waypoint=true
+```
+
+Create Kubernetes Gateway for BookInfo ingress
+```bash
+oc apply -f ./resources/OSSM3Ambient/bookinfogateway.yaml -n bookinfo
+oc wait --for=condition=Programmed gateway/bookinfo-ingress-gateway -n bookinfo --timeout=60s
+```
+
+Create OpenShift Route for BookInfo edge
+```bash
+oc apply -f ./resources/OSSM3Ambient/routebookinfo.yaml -n bookinfo
+```
+
+Create HTTPRoute with dynamic hostname
+```bash
+export BOOKINFO_ROUTE_HOSTNAME=$(oc get route bookinfo-edge -n bookinfo -o jsonpath='{.spec.host}')
+cat ./resources/OSSM3Ambient/HTTPRoutebookinfo.yaml.template | envsubst | oc apply -f -
+```
+
+Optionally, install a traffic generator for bookinfo app
+```bash
+export INGRESSHOST=$(oc get route bookinfo-edge -n bookinfo -o=jsonpath='{.spec.host}')
+cat ./resources/Bookinfo/traffic-generator-configmap.yaml | ROUTE="http://${INGRESSHOST}/productpage" envsubst | oc -n bookinfo apply -f - 
+oc apply -f ./resources/Bookinfo/traffic-generator.yaml -n bookinfo
+```
+
+### Set up sample RestAPI (Ambient Mode)
+
+Install the sample RestAPI `hello-service` via Kustomize
+```bash
+oc apply -k ./resources/application/kustomize/overlays/ambient
+```
+
+Test the REST API endpoints:
+```bash
+sh ./scripts/test-api.sh
+```
+
+</details>
+
+---
+
+## 3. Common Post-Installation (Both Modes)
+
+Return to these steps after completing either Sidecar or Ambient mode installation above.
+
+### Set up OCP user monitoring workflow
+
+First, OCP user monitoring needs to be enabled
+```bash
+oc apply -f ./resources/Monitoring/ocpUserMonitoring.yaml
+```
+
+Then, create service monitor and pod monitor for istio namespaces
+```bash
+oc apply -f ./resources/Monitoring/serviceMonitor.yaml -n istio-system
+oc apply -f ./resources/Monitoring/podMonitor.yaml -n istio-system
+oc apply -f ./resources/Monitoring/podMonitor.yaml -n istio-ingress
+```
+
+### Set up Kiali
+
+Create cluster role binding for kiali to be able to read ocp monitoring
+```bash
+oc apply -f ./resources/Kiali/kialiCrb.yaml -n istio-system
+```
+
+Set up Kiali CR. The URL for Jaeger UI (which was exposed earlier) needs to be set to Kiali CR in `.spec.external_services.tracing.url`
+> **_NOTE:_**  In this example, the `.spec.version` is missing so the istio version is automatically set by Kiali operator. You can specify the version manually, but it must be one that is supported by the operator; otherwise, an error will appear in events on the Kiali resource.
+```bash
+export TRACING_INGRESS_ROUTE="http://$(oc get -n tracing-system route tracing-ui -o jsonpath='{.spec.host}')"
+cat ./resources/Kiali/kialiCr.yaml | JAEGERROUTE="${TRACING_INGRESS_ROUTE}" envsubst | oc -n istio-system apply -f -
+oc wait --for condition=Successful kiali/kiali --timeout 150s -n istio-system 
+```
+
+Increase timeout for the Kiali ui route in OCP since big queries for spans can take longer
+```bash
+oc annotate route kiali haproxy.router.openshift.io/timeout=60s -n istio-system
+```
+
+Optionally, OSSMC plugin can be installed as well
+> **_NOTE:_**  In this example, the `.spec.version` is missing so the istio version is automatically set by Kiali operator. You can specify the version manually, but it must be one that is supported by the operator and the version needs to be **the same as Kiali CR**.
+```bash
+oc apply -f ./resources/Kiali/kialiOssmcCr.yaml -n istio-system
+oc wait -n istio-system --for=condition=Successful OSSMConsole ossmconsole --timeout 120s
+```
+
+---
+
+## 4. Verification (Both Modes)
+
+Now, everything should be set. Verification steps differ slightly by mode.
+
+### Check Bookinfo Application
+
+**Sidecar Mode:**
 ```bash
 INGRESSHOST=$(oc get route istio-ingressgateway -n istio-ingress -o=jsonpath='{.spec.host}')
 echo "http://${INGRESSHOST}/productpage"
 ```
-  
-Check the RestAPI
+
+**Ambient Mode:**
+```bash
+INGRESSHOST=$(oc get route bookinfo-edge -n bookinfo -o=jsonpath='{.spec.host}')
+echo "http://${INGRESSHOST}/productpage"
+```
+
+### Check RestAPI
+
+Both modes support the REST API. Use the test script:
+```bash
+sh ./scripts/test-api.sh
+```
+
+Or test manually:
+
+**Sidecar Mode:**
 ```bash
 export GATEWAY=$(oc get gateway hello-gateway -n istio-ingress -o template --template='{{(index .status.addresses 0).value}}')
-
 curl -s $GATEWAY/hello | jq
 curl -s $GATEWAY/hello-service | jq
 ```
 
-Check Kiali UI
+**Ambient Mode:**
+```bash
+export GATEWAY=$(oc get route hello-gateway -n istio-ingress -o jsonpath='{.spec.host}')
+curl -s http://$GATEWAY/hello | jq
+curl -s http://$GATEWAY/hello-service | jq
+```
+
+### Check Kiali UI
+
 ```bash
 KIALI_HOST=$(oc get route kiali -n istio-system -o=jsonpath='{.spec.host}')
 echo "https://${KIALI_HOST}"
