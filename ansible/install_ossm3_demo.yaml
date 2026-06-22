@@ -64,6 +64,17 @@
       retries: 15
       delay: 10
 
+    - name: Wait for Tempo query-frontend service endpoints
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Endpoints
+        namespace: "{{ namespace_tracing_system }}"
+        name: tempo-sample-query-frontend
+      register: tempo_endpoints
+      until: tempo_endpoints.resources[0].subsets is defined and tempo_endpoints.resources[0].subsets | length > 0
+      retries: 15
+      delay: 2
+
     - name: Expose Jaeger UI route
       kubernetes.core.k8s:
         state: present

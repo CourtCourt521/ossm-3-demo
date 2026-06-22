@@ -36,6 +36,18 @@ oc wait --for condition=Ready TempoStack/sample --timeout 150s -n tracing-system
 echo "Waiting for Tempo deployment to become available..."
 oc wait --for condition=Available deployment/tempo-sample-compactor --timeout 150s -n tracing-system
 
+echo "Waiting for Tempo query-frontend service to be ready..."
+timeout=30
+until oc get endpoints tempo-sample-query-frontend -n tracing-system -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null | grep -q .; do
+    echo "Waiting for service endpoints..."
+    sleep 2
+    ((timeout--))
+    if [ $timeout -le 0 ]; then
+        echo "Warning: Tempo query-frontend endpoints not ready, continuing anyway..."
+        break
+    fi
+done
+
 echo "Exposing Jaeger UI route (will be used in kiali ui)"
 oc expose svc tempo-sample-query-frontend --port=jaeger-ui --name=tracing-ui -n tracing-system
 
